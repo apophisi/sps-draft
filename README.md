@@ -12,7 +12,6 @@ pipeline orchestration, and speculative decoding logic.
 ```text
 config.py                 # model ids and shared constants
 main.py                   # smoke-test entrypoint
-tokenization.py           # compatibility re-export for runtime.tokenization
 
 runtime/
   deps.py                 # torch/transformers dependency checks, device, dtype
@@ -36,6 +35,27 @@ uv add torch transformers accelerate numpy
 If you use a CUDA-specific PyTorch wheel, install `torch` from the matching
 PyTorch index first, then add the remaining packages.
 
+Model downloads use the Hugging Face mirror by default:
+
+```text
+HF_ENDPOINT=https://hf-mirror.com
+```
+
+To override it for one run:
+
+```bash
+uv run python main.py --hf-endpoint https://huggingface.co
+```
+
+Hugging Face files are cached under `~/.cache/huggingface/hub` unless you set
+`HF_HOME` or `HUGGINGFACE_HUB_CACHE`.
+
+If the models are already cached locally, skip network access with:
+
+```bash
+uv run python main.py --local-files-only
+```
+
 ## Current Flow
 
 1. `pipeline.load_draft_and_target()` loads tokenizer, draft model, and target
@@ -45,6 +65,9 @@ PyTorch index first, then add the remaining packages.
    their KV-cache states.
 4. `speculative.propose_k_tokens()` uses the draft model cache to sample `k`
    future tokens with NumPy sampling.
+5. `speculative.verify_k_tokens()` verifies the proposal with the target model.
+6. `speculative.speculative_generate()` repeats proposal and verification until
+   `max_new_tokens` or EOS.
 
 Example:
 
@@ -53,7 +76,7 @@ import numpy as np
 
 from pipeline import load_draft_and_target, prefill_both
 from runtime import encode_prompt
-from speculative import propose_k_tokens
+from speculative import speculative_generate
 
 
 tokenizer, draft, target = load_draft_and_target()
@@ -65,21 +88,26 @@ batch = encode_prompt(
 )
 draft_state, target_state = prefill_both(draft, target, batch)
 
-proposal = propose_k_tokens(
+generation = speculative_generate(
     draft,
+    target,
     draft_state,
-    k=4,
+    target_state,
+    max_new_tokens=128,
+    draft_steps=4,
     rng=np.random.default_rng(0),
     temperature=1.0,
 )
 
-print(proposal.token_ids)
+print(tokenizer.decode(generation.token_ids, skip_special_tokens=True))
+print(generation.stats.avg_accept)
+print(generation.stats.accept_rate)
 ```
 
-Run the current prefill smoke test:
+Run generation:
 
 ```bash
-uv run python main.py
+uv run python main.py -k 4 --max-new-tokens 128
 ```
 
 ## Notes
@@ -89,4 +117,6 @@ uv run python main.py
 - The optional `top_k` argument in `speculative.sampling.logits_to_probs()` is a
   per-step vocabulary truncation setting. It is different from SPS draft length
   `k`.
-- Target verification and accept/reject correction are the next pieces to add.
+- `avg_accept` is the average accepted draft length per speculative round.
+- `accept rate` is total accepted draft tokens divided by total proposed draft
+  tokens.

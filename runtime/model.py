@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from runtime.deps import require_model_deps, resolve_device, resolve_dtype
+from runtime.deps import (
+    configure_hf_endpoint,
+    require_model_deps,
+    resolve_device,
+    resolve_dtype,
+)
 
 
 @dataclass
@@ -37,7 +42,10 @@ class ModelRunner:
         device: str = "auto",
         dtype: str = "auto",
         device_map: str | None = None,
+        hf_endpoint: str | None = None,
+        local_files_only: bool = False,
     ) -> None:
+        endpoint = configure_hf_endpoint(hf_endpoint)
         torch, AutoModelForCausalLM = require_model_deps()
 
         self.torch = torch
@@ -48,11 +56,20 @@ class ModelRunner:
         load_kwargs = {
             "torch_dtype": self.dtype,
             "trust_remote_code": True,
+            "local_files_only": local_files_only,
         }
         if device_map is not None:
             load_kwargs["device_map"] = device_map
 
-        self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+        except OSError as error:
+            raise RuntimeError(
+                f"Failed to load model {model_id!r} from {endpoint!r}.\n"
+                "Try another endpoint, for example:\n"
+                "  uv run python main.py --hf-endpoint https://huggingface.co\n"
+                "Or pre-download the model and run with --local-files-only."
+            ) from error
         self.model.eval()
 
         if device_map is None:

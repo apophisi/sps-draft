@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import os
+
+from config import DEFAULT_HF_ENDPOINT
+
 
 INSTALL_HINT = "uv add torch transformers accelerate"
 
 
 def require_model_deps():
+    configure_hf_endpoint()
     try:
         import torch
         from transformers import AutoModelForCausalLM
@@ -17,6 +22,7 @@ def require_model_deps():
 
 
 def require_tokenizer_deps():
+    configure_hf_endpoint()
     try:
         import torch
         from transformers import AutoTokenizer
@@ -26,6 +32,16 @@ def require_tokenizer_deps():
             f"  {INSTALL_HINT}"
         ) from error
     return torch, AutoTokenizer
+
+
+def configure_hf_endpoint(endpoint: str | None = None) -> str:
+    """Use the configured Hugging Face endpoint before importing transformers."""
+
+    if endpoint is not None:
+        os.environ["HF_ENDPOINT"] = endpoint
+    else:
+        os.environ.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
+    return os.environ["HF_ENDPOINT"]
 
 
 def resolve_device(torch, device: str):

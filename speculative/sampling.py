@@ -36,6 +36,23 @@ def sample_token(probs: np.ndarray, rng: np.random.Generator) -> int:
     return int(rng.choice(len(probs), p=probs))
 
 
+def sample_residual(
+    target_probs: np.ndarray,
+    draft_probs: np.ndarray,
+    rng: np.random.Generator,
+) -> int:
+    """Sample from norm(max(target_probs - draft_probs, 0))."""
+
+    residual = np.maximum(
+        np.asarray(target_probs, dtype=np.float64)
+        - np.asarray(draft_probs, dtype=np.float64),
+        0.0,
+    )
+    if np.sum(residual) <= 0.0:
+        return sample_token(target_probs, rng)
+    return sample_token(residual, rng)
+
+
 def normalize(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
     total = np.sum(values)
