@@ -1,0 +1,5 @@
+请用一句话解释 speculative decoding。
+什么是 KV cache？它如何加速大模型推理？
+比较固定 K 与动态 K 推测解码的优缺点。
+写一首关于春天的四句诗。
+解释 Transformer 中 self-attention 的作用。

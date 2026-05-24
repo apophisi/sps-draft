@@ -1,0 +1,43 @@
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  22%|██▏       | 67/311 [00:00<00:00, 660.92it/s]Loading weights:  45%|████▍     | 139/311 [00:00<00:00, 692.10it/s]Loading weights:  67%|██████▋   | 209/311 [00:06<00:04, 25.17it/s] Loading weights: 100%|██████████| 311/311 [00:06<00:00, 50.27it/s]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  45%|████▌     | 140/311 [00:00<00:00, 1392.86it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 1676.56it/s]
+[fixed K=4] p000 tokens/s=2.52
+[fixed K=8] p000 tokens/s=1.65
+[dynamic p_max_threshold=0.6] p000 avg_draft=1.29 tokens/s=4.97
+[dynamic p_max_threshold=0.7] p000 avg_draft=1.20 tokens/s=5.03
+[dynamic p_max_threshold=0.8] p000 avg_draft=1.21 tokens/s=4.49
+[fixed K=4] p001 tokens/s=2.39
+[fixed K=8] p001 tokens/s=1.44
+[dynamic p_max_threshold=0.6] p001 avg_draft=1.18 tokens/s=4.57
+[dynamic p_max_threshold=0.7] p001 avg_draft=1.06 tokens/s=5.00
+[dynamic p_max_threshold=0.8] p001 avg_draft=1.06 tokens/s=4.95
+[fixed K=4] p002 tokens/s=2.61
+[fixed K=8] p002 tokens/s=1.55
+[dynamic p_max_threshold=0.6] p002 avg_draft=1.90 tokens/s=3.64
+[dynamic p_max_threshold=0.7] p002 avg_draft=1.02 tokens/s=4.24
+[dynamic p_max_threshold=0.8] p002 avg_draft=1.01 tokens/s=3.40
+[fixed K=4] p003 tokens/s=2.23
+[fixed K=8] p003 tokens/s=1.31
+[dynamic p_max_threshold=0.6] p003 avg_draft=1.27 tokens/s=3.99
+[dynamic p_max_threshold=0.7] p003 avg_draft=1.00 tokens/s=4.57
+[dynamic p_max_threshold=0.8] p003 avg_draft=1.14 tokens/s=5.23
+[fixed K=4] p004 tokens/s=2.10
+[fixed K=8] p004 tokens/s=1.28
+[dynamic p_max_threshold=0.6] p004 avg_draft=1.40 tokens/s=4.08
+[dynamic p_max_threshold=0.7] p004 avg_draft=1.01 tokens/s=5.00
+[dynamic p_max_threshold=0.8] p004 avg_draft=1.06 tokens/s=5.31
+Wrote results to /root/draft/main/results/dynamic_k_results.jsonl
+
+=== Dynamic K vs Fixed K (mean over prompts) ===
+Method       Strategy                 Tokens/s  Speedup   Accept   AvgAcc  AvgDraft
+----------------------------------------------------------------------------------
+Fixed K      K=4                          2.37    0.152    0.024    0.095      3.98
+Fixed K      K=8                          1.45    0.093    0.008    0.063      7.86
+Dynamic K    p_max_threshold=0.6          4.25    0.273    0.050    0.068      1.41
+Dynamic K    p_max_threshold=0.7          4.77    0.306    0.050    0.054      1.06
+Dynamic K    p_max_threshold=0.8          4.68    0.301    0.064    0.073      1.10
+
+Notes:
+- Speedup = speculative tokens/s divided by AR baseline tokens/s (same prompt).
+- Fixed K and dynamic K both use greedy draft via speculative_generate_dynamic.
+- p_max strategy stops drafting when max softmax prob (T=1) falls below threshold.
