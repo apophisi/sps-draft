@@ -118,7 +118,4 @@ def advance_state(
     state: PrefillState,
     token_ids: list[int],
 ) -> PrefillState:
-    current_state = state
-    for token_id in token_ids:
-        current_state = runner.decode_one(token_id, current_state)
-    return current_state
+    return runner.decode_many(token_ids, state)

@@ -29,7 +29,7 @@ from dynamic_policy import (
 from pipeline import load_draft_and_target, prefill_both
 from runtime import encode_prompt
 from runtime.model import ModelRunner, PrefillState
-from speculative.sampling import logits_to_probs
+from speculative.sampling import logits_to_probs, sample_token
 
 
 DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parent / "prompts" / "default_prompts.txt"
@@ -56,6 +56,8 @@ class RunMetrics:
     max_new_tokens: int
     generated_tokens: int
     ar_tokens: int
+    ar_elapsed_sec: float
+    ar_tokens_s: float
     rounds: int
     acceptance_rate: float
     average_acceptance_length: float
@@ -76,27 +78,34 @@ def ar_baseline_generate(
     *,
     max_new_tokens: int,
     eos_token_id: int | None,
+    rng: np.random.Generator,
     temperature: float = 0.0,
 ) -> tuple[list[int], float]:
-    """Minimal AR baseline for speedup (used only by this experiment script)."""
+    """Target-only autoregressive baseline with KV cache.
+
+    This baseline uses the same target model and the same prefilling state as
+    speculative decoding. It excludes prefill time, matching the speculative
+    timing below, and measures only decode throughput.
+    """
 
     token_ids: list[int] = []
     current = state
+    synchronize_runner(target)
     start = time.perf_counter()
 
     while len(token_ids) < max_new_tokens:
         if temperature <= 0.0:
             logits = current.next_token_logits
-            logits_np = np.asarray(logits.detach().float().cpu().numpy()).squeeze()
-            token_id = int(np.argmax(logits_np))
+            token_id = int(target.torch.argmax(logits, dim=-1).item())
         else:
             probs = logits_to_probs(current.next_token_logits, temperature=temperature)
-            token_id = int(np.argmax(probs))
+            token_id = sample_token(probs, rng)
         token_ids.append(token_id)
         current = target.decode_one(token_id, current)
         if eos_token_id is not None and token_id == eos_token_id:
             break
 
+    synchronize_runner(target)
     elapsed = time.perf_counter() - start
     return token_ids, elapsed
 
@@ -117,6 +126,7 @@ def measure_run(
     elapsed_sec: float,
     generated_tokens: int,
     ar_tokens: int,
+    ar_elapsed_sec: float,
     acceptance_rate: float,
     average_acceptance_length: float,
     average_draft_length: float,
@@ -128,6 +138,7 @@ def measure_run(
     speedup: float | None = None,
 ) -> RunMetrics:
     tokens_s = generated_tokens / elapsed_sec if elapsed_sec > 0 else 0.0
+    ar_tokens_s = ar_tokens / ar_elapsed_sec if ar_elapsed_sec > 0 else 0.0
     return RunMetrics(
         method=method,
         strategy=strategy,
@@ -140,6 +151,8 @@ def measure_run(
         max_new_tokens=max_new_tokens,
         generated_tokens=generated_tokens,
         ar_tokens=ar_tokens,
+        ar_elapsed_sec=ar_elapsed_sec,
+        ar_tokens_s=ar_tokens_s,
         rounds=rounds,
         acceptance_rate=acceptance_rate,
         average_acceptance_length=average_acceptance_length,
@@ -162,6 +175,7 @@ def run_with_policy(
     eos_token_id: int | None,
     temperature: float,
 ) -> tuple[DynamicGenerationResult, float]:
+    synchronize_runner(target)
     start = time.perf_counter()
     result = speculative_generate_dynamic(
         draft,
@@ -174,8 +188,15 @@ def run_with_policy(
         eos_token_id=eos_token_id,
         temperature=temperature,
     )
+    synchronize_runner(target)
     elapsed = time.perf_counter() - start
     return result, elapsed
+
+
+def synchronize_runner(runner: ModelRunner) -> None:
+    torch = runner.torch
+    if torch.cuda.is_available() and runner.model_device.type == "cuda":
+        torch.cuda.synchronize(runner.model_device)
 
 
 def append_jsonl(path: Path, record: RunMetrics) -> None:
@@ -213,10 +234,11 @@ def print_summary(records: list[RunMetrics]) -> None:
     print()
     print("=== Dynamic K vs Fixed K (mean over prompts) ===")
     print(
-        f"{'Method':<12} {'Strategy':<16} {'Tokens/s':>10} {'Speedup':>8} "
-        f"{'Acceptance Rate':>16} {'Avg Accept Length':>18} {'Avg Draft Length':>17}"
+        f"{'Method':<12} {'Strategy':<16} {'Tokens/s':>10} {'AR Tok/s':>10} "
+        f"{'Speedup':>8} {'Acceptance Rate':>16} {'Avg Accept Length':>18} "
+        f"{'Avg Draft Length':>17}"
     )
-    print("-" * 100)
+    print("-" * 112)
 
     strategy_order = [f"K={K}" for K in FIXED_K] + [f"p_max > {t}" for t in THRESHOLDS]
     for strategy in strategy_order:
@@ -226,6 +248,7 @@ def print_summary(records: list[RunMetrics]) -> None:
         print(
             f"{method:<12} {strategy:<16} "
             f"{avg_strategy(strategy, 'tokens_s'):>10.2f} "
+            f"{avg_strategy(strategy, 'ar_tokens_s'):>10.2f} "
             f"{avg_strategy(strategy, 'speedup'):>8.3f} "
             f"{avg_strategy(strategy, 'acceptance_rate'):>16.3f} "
             f"{avg_strategy(strategy, 'average_acceptance_length'):>18.3f} "
@@ -246,6 +269,15 @@ def load_records(path: Path) -> list[RunMetrics]:
         if not line.strip():
             continue
         row = json.loads(line)
+        if "ar_tokens_s" not in row:
+            speedup = row.get("speedup")
+            tokens_s = row.get("tokens_s", 0.0)
+            row["ar_tokens_s"] = tokens_s / speedup if speedup else 0.0
+        if "ar_elapsed_sec" not in row:
+            ar_tokens_s = row.get("ar_tokens_s", 0.0)
+            row["ar_elapsed_sec"] = (
+                row.get("ar_tokens", 0) / ar_tokens_s if ar_tokens_s else 0.0
+            )
         records.append(RunMetrics(**row))
     return records
 
@@ -270,6 +302,7 @@ def run_experiments(
     )
     eos_token_id = tokenizer.eos_token_id
     temperature = 0.0
+    target_temperature = 1.0 if temperature <= 0.0 else temperature
     all_records: list[RunMetrics] = []
 
     for prompt_idx, prompt in enumerate(prompts):
@@ -282,12 +315,14 @@ def run_experiments(
         )
 
         _, target_state = prefill_both(draft, target, batch)
+        ar_rng = np.random.default_rng(args.seed + prompt_idx)
         ar_token_ids, ar_elapsed_sec = ar_baseline_generate(
             target,
             target_state,
             max_new_tokens=args.max_new_tokens,
             eos_token_id=eos_token_id,
-            temperature=temperature,
+            rng=ar_rng,
+            temperature=target_temperature,
         )
         ar_tokens = len(ar_token_ids)
 
@@ -314,6 +349,7 @@ def run_experiments(
                 elapsed_sec=elapsed_sec,
                 generated_tokens=len(result.token_ids),
                 ar_tokens=ar_tokens,
+                ar_elapsed_sec=ar_elapsed_sec,
                 acceptance_rate=result.stats.accept_rate,
                 average_acceptance_length=result.stats.avg_accept,
                 average_draft_length=average_draft_length_from_stats(result.stats),
@@ -350,6 +386,7 @@ def run_experiments(
                 elapsed_sec=elapsed_sec,
                 generated_tokens=len(result.token_ids),
                 ar_tokens=ar_tokens,
+                ar_elapsed_sec=ar_elapsed_sec,
                 acceptance_rate=result.stats.accept_rate,
                 average_acceptance_length=result.stats.avg_accept,
                 average_draft_length=result.stats.average_draft_length,
@@ -392,6 +429,7 @@ def run_experiments(
                     elapsed_sec=elapsed_sec,
                     generated_tokens=len(result.token_ids),
                     ar_tokens=ar_tokens,
+                    ar_elapsed_sec=ar_elapsed_sec,
                     acceptance_rate=result.stats.accept_rate,
                     average_acceptance_length=result.stats.avg_accept,
                     average_draft_length=result.stats.average_draft_length,

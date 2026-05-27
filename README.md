@@ -133,7 +133,9 @@ Each prompt run compares **Fixed K** (`K=4`, `K=8`) against **Dynamic K**
 (`p_max > threshold`) and writes metrics to JSONL:
 
 - `acceptance_rate`, `average_acceptance_length`, `average_draft_length`
-- `tokens_s`, `speedup` (speculative tokens/s divided by AR baseline tokens/s)
+- `tokens_s`, `elapsed_sec` for each speculative method
+- `ar_tokens`, `ar_elapsed_sec`, `ar_tokens_s` for the target-only AR baseline
+- `speedup` (speculative tokens/s divided by AR baseline tokens/s)
 
 ### Run full experiments
 

@@ -78,13 +78,32 @@ def verify_k_tokens(
         raise ValueError("proposal token_ids and probs must have the same length")
 
     proposed_count = len(proposal.token_ids)
+    if proposed_count == 0:
+        return VerificationResult(
+            accepted_token_ids=[],
+            corrected_token_id=None,
+            bonus_token_id=None,
+            proposed_count=0,
+            target_probs=[],
+            state=state,
+        )
+
     accepted_token_ids: list[int] = []
     target_probs: list[np.ndarray] = []
-    current_state = state
+    proposed_state = target.decode_many(proposal.token_ids, state)
+    target_logits = [state.next_token_logits]
+    target_logits.extend(
+        proposed_state.logits[:, index, :]
+        for index in range(proposed_count - 1)
+    )
 
-    for token_id, draft_probs in zip(proposal.token_ids, proposal.probs):
+    for token_id, draft_probs, logits in zip(
+        proposal.token_ids,
+        proposal.probs,
+        target_logits,
+    ):
         target_distribution = logits_to_probs(
-            current_state.next_token_logits,
+            logits,
             temperature=temperature,
             top_k=top_k,
         )
@@ -98,15 +117,15 @@ def verify_k_tokens(
 
         if rng.random() <= accept_prob:
             accepted_token_ids.append(token_id)
-            current_state = target.decode_one(token_id, current_state)
             if token_id == eos_token_id:
+                accepted_state = target.decode_many(accepted_token_ids, state)
                 return VerificationResult(
                     accepted_token_ids=accepted_token_ids,
                     corrected_token_id=None,
                     bonus_token_id=None,
                     proposed_count=proposed_count,
                     target_probs=target_probs,
-                    state=current_state,
+                    state=accepted_state,
                 )
             continue
 
@@ -115,14 +134,17 @@ def verify_k_tokens(
             draft_probs,
             rng,
         )
-        current_state = target.decode_one(corrected_token_id, current_state)
+        corrected_state = target.decode_many(
+            [*accepted_token_ids, corrected_token_id],
+            state,
+        )
         return VerificationResult(
             accepted_token_ids=accepted_token_ids,
             corrected_token_id=corrected_token_id,
             bonus_token_id=None,
             proposed_count=proposed_count,
             target_probs=target_probs,
-            state=current_state,
+            state=corrected_state,
         )
 
     if not sample_bonus:
@@ -132,16 +154,16 @@ def verify_k_tokens(
             bonus_token_id=None,
             proposed_count=proposed_count,
             target_probs=target_probs,
-            state=current_state,
+            state=proposed_state,
         )
 
     bonus_distribution = logits_to_probs(
-        current_state.next_token_logits,
+        proposed_state.next_token_logits,
         temperature=temperature,
         top_k=top_k,
     )
     bonus_token_id = sample_token(bonus_distribution, rng)
-    current_state = target.decode_one(bonus_token_id, current_state)
+    bonus_state = target.decode_one(bonus_token_id, proposed_state)
 
     return VerificationResult(
         accepted_token_ids=accepted_token_ids,
@@ -149,7 +171,7 @@ def verify_k_tokens(
         bonus_token_id=bonus_token_id,
         proposed_count=proposed_count,
         target_probs=target_probs,
-        state=current_state,
+        state=bonus_state,
     )
 
 

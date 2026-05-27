@@ -133,3 +133,36 @@ class ModelRunner:
             past_key_values=outputs.past_key_values,
             logits=outputs.logits,
         )
+
+    @no_grad
+    def decode_many(self, token_ids: list[int], state: PrefillState) -> PrefillState:
+        if not token_ids:
+            return state
+
+        next_input_ids = self.torch.tensor(
+            [token_ids],
+            dtype=state.input_ids.dtype,
+            device=self.model_device,
+        )
+        next_attention = self.torch.ones(
+            (state.attention_mask.shape[0], len(token_ids)),
+            dtype=state.attention_mask.dtype,
+            device=self.model_device,
+        )
+        attention_mask = self.torch.cat([state.attention_mask, next_attention], dim=1)
+
+        outputs = self.model(
+            input_ids=next_input_ids,
+            attention_mask=attention_mask,
+            past_key_values=state.past_key_values,
+            use_cache=True,
+            return_dict=True,
+        )
+        input_ids = self.torch.cat([state.input_ids, next_input_ids], dim=1)
+
+        return PrefillState(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=outputs.past_key_values,
+            logits=outputs.logits,
+        )
