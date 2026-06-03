@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import time
 
 import numpy as np
 
@@ -27,6 +28,9 @@ class DynamicGenerationStats(GenerationStats):
     """Stats for dynamic draft depth, including average draft length."""
 
     draft_lengths: list[int] = field(default_factory=list)
+    draft_proposal_sec: float = 0.0
+    target_verify_sec: float = 0.0
+    draft_update_sec: float = 0.0
 
     @property
     def average_draft_length(self) -> float:
@@ -202,6 +206,7 @@ def speculative_generate_dynamic(
     eos_token_id: int | None = None,
     temperature: float = 0.0,
     top_k: int | None = None,
+    profile_phases: bool = False,
 ) -> DynamicGenerationResult:
     """Speculative decoding loop with dynamic draft depth per round."""
 
@@ -218,6 +223,7 @@ def speculative_generate_dynamic(
     while len(generated_token_ids) < max_new_tokens:
         remaining = max_new_tokens - len(generated_token_ids)
 
+        phase_start = time.perf_counter() if profile_phases else 0.0
         proposal = propose_dynamic_tokens(
             draft,
             current_draft_state,
@@ -227,6 +233,8 @@ def speculative_generate_dynamic(
             top_k=top_k,
             max_new_tokens=remaining,
         )
+        if profile_phases:
+            stats.draft_proposal_sec += time.perf_counter() - phase_start
         draft_length = len(proposal.token_ids)
         stats.draft_lengths.append(draft_length)
 
@@ -235,6 +243,7 @@ def speculative_generate_dynamic(
 
         sample_bonus = remaining > draft_length
         verify_temperature = 1.0 if temperature <= 0.0 else temperature
+        phase_start = time.perf_counter() if profile_phases else 0.0
         verification = verify_k_tokens(
             target,
             current_target_state,
@@ -245,11 +254,16 @@ def speculative_generate_dynamic(
             eos_token_id=eos_token_id,
             sample_bonus=sample_bonus,
         )
+        if profile_phases:
+            stats.target_verify_sec += time.perf_counter() - phase_start
 
         round_token_ids = verification.token_ids[:remaining]
         generated_token_ids.extend(round_token_ids)
         current_target_state = verification.state
+        phase_start = time.perf_counter() if profile_phases else 0.0
         current_draft_state = advance_state(draft, current_draft_state, round_token_ids)
+        if profile_phases:
+            stats.draft_update_sec += time.perf_counter() - phase_start
 
         stats.rounds += 1
         stats.proposed_tokens += verification.proposed_count

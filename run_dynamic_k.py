@@ -65,6 +65,9 @@ class RunMetrics:
     tokens_s: float
     elapsed_sec: float
     speedup: float | None
+    draft_proposal_sec: float = 0.0
+    target_verify_sec: float = 0.0
+    draft_update_sec: float = 0.0
 
 
 def load_prompts(path: Path) -> list[str]:
@@ -136,6 +139,9 @@ def measure_run(
     threshold: float | None = None,
     margin: float | None = None,
     speedup: float | None = None,
+    draft_proposal_sec: float = 0.0,
+    target_verify_sec: float = 0.0,
+    draft_update_sec: float = 0.0,
 ) -> RunMetrics:
     tokens_s = generated_tokens / elapsed_sec if elapsed_sec > 0 else 0.0
     ar_tokens_s = ar_tokens / ar_elapsed_sec if ar_elapsed_sec > 0 else 0.0
@@ -160,6 +166,9 @@ def measure_run(
         tokens_s=tokens_s,
         elapsed_sec=elapsed_sec,
         speedup=speedup,
+        draft_proposal_sec=draft_proposal_sec,
+        target_verify_sec=target_verify_sec,
+        draft_update_sec=draft_update_sec,
     )
 
 
@@ -174,6 +183,7 @@ def run_with_policy(
     rng: np.random.Generator,
     eos_token_id: int | None,
     temperature: float,
+    profile_phases: bool = False,
 ) -> tuple[DynamicGenerationResult, float]:
     synchronize_runner(target)
     start = time.perf_counter()
@@ -187,6 +197,7 @@ def run_with_policy(
         rng=rng,
         eos_token_id=eos_token_id,
         temperature=temperature,
+        profile_phases=profile_phases,
     )
     synchronize_runner(target)
     elapsed = time.perf_counter() - start
@@ -278,6 +289,12 @@ def load_records(path: Path) -> list[RunMetrics]:
             row["ar_elapsed_sec"] = (
                 row.get("ar_tokens", 0) / ar_tokens_s if ar_tokens_s else 0.0
             )
+        for field in (
+            "draft_proposal_sec",
+            "target_verify_sec",
+            "draft_update_sec",
+        ):
+            row.setdefault(field, 0.0)
         records.append(RunMetrics(**row))
     return records
 
@@ -339,6 +356,7 @@ def run_experiments(
                 rng=rng,
                 eos_token_id=eos_token_id,
                 temperature=temperature,
+                profile_phases=args.profile_phases,
             )
             record = measure_run(
                 method="Fixed K",
@@ -358,6 +376,9 @@ def run_experiments(
                 speedup=compute_speedup(
                     len(result.token_ids), elapsed_sec, ar_tokens, ar_elapsed_sec
                 ),
+                draft_proposal_sec=result.stats.draft_proposal_sec,
+                target_verify_sec=result.stats.target_verify_sec,
+                draft_update_sec=result.stats.draft_update_sec,
             )
             append_jsonl(output, record)
             all_records.append(record)
@@ -376,6 +397,7 @@ def run_experiments(
                 rng=rng,
                 eos_token_id=eos_token_id,
                 temperature=temperature,
+                profile_phases=args.profile_phases,
             )
             record = measure_run(
                 method="Dynamic K",
@@ -396,6 +418,9 @@ def run_experiments(
                 speedup=compute_speedup(
                     len(result.token_ids), elapsed_sec, ar_tokens, ar_elapsed_sec
                 ),
+                draft_proposal_sec=result.stats.draft_proposal_sec,
+                target_verify_sec=result.stats.target_verify_sec,
+                draft_update_sec=result.stats.draft_update_sec,
             )
             append_jsonl(output, record)
             all_records.append(record)
@@ -439,6 +464,9 @@ def run_experiments(
                     speedup=compute_speedup(
                         len(result.token_ids), elapsed_sec, ar_tokens, ar_elapsed_sec
                     ),
+                    draft_proposal_sec=result.stats.draft_proposal_sec,
+                    target_verify_sec=result.stats.target_verify_sec,
+                    draft_update_sec=result.stats.draft_update_sec,
                 )
                 append_jsonl(output, record)
                 all_records.append(record)
@@ -476,6 +504,11 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=[0.05, 0.1, 0.2],
         help="Margin thresholds for top-1 / top-2 strategy",
+    )
+    parser.add_argument(
+        "--profile-phases",
+        action="store_true",
+        help="Record draft/verify/update phase times in JSONL",
     )
     parser.add_argument(
         "--quick",
