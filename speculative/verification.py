@@ -49,7 +49,7 @@ class VerificationResult:
 
     @property
     def accepted_all(self) -> bool:
-        return self.corrected_token_id is None
+        return self.corrected_token_id is None and self.accepted_count == self.proposed_count
 
 
 def verify_k_tokens(
@@ -58,21 +58,12 @@ def verify_k_tokens(
     proposal: DraftProposal,
     *,
     rng: np.random.Generator,
-    temperature: float = 1.0,
+    temperature: float = 0.0,
     top_k: int | None = None,
     eos_token_id: int | None = None,
     sample_bonus: bool = True,
 ) -> VerificationResult:
-    """Verify a draft proposal with the target model.
-
-    For proposed token x_i, q_i is the draft distribution saved in the proposal
-    and p_i is the target distribution at the same prefix. The token is accepted
-    with probability min(1, p_i(x_i) / q_i(x_i)).
-
-    On the first rejection, this function samples one corrected token from the
-    residual distribution norm(max(p_i - q_i, 0)) and stops the round. If every
-    proposed token is accepted, it samples one bonus token from the target model.
-    """
+    """Verify a draft proposal with the target model."""
 
     if len(proposal.token_ids) != len(proposal.probs):
         raise ValueError("proposal token_ids and probs must have the same length")
@@ -97,11 +88,70 @@ def verify_k_tokens(
         for index in range(proposed_count - 1)
     )
 
+    if temperature <= 0.0:
+        empty_distribution = np.empty(0, dtype=np.float64)
+        for token_id, logits in zip(proposal.token_ids, target_logits):
+            target_token_id = int(target.torch.argmax(logits, dim=-1).item())
+            target_probs.append(empty_distribution)
+
+            if token_id == target_token_id:
+                accepted_token_ids.append(token_id)
+                if token_id == eos_token_id:
+                    accepted_state = target.decode_many(accepted_token_ids, state)
+                    return VerificationResult(
+                        accepted_token_ids=accepted_token_ids,
+                        corrected_token_id=None,
+                        bonus_token_id=None,
+                        proposed_count=proposed_count,
+                        target_probs=target_probs,
+                        state=accepted_state,
+                    )
+                continue
+
+            corrected_state = target.decode_many(
+                [*accepted_token_ids, target_token_id],
+                state,
+            )
+            return VerificationResult(
+                accepted_token_ids=accepted_token_ids,
+                corrected_token_id=target_token_id,
+                bonus_token_id=None,
+                proposed_count=proposed_count,
+                target_probs=target_probs,
+                state=corrected_state,
+            )
+
+        if not sample_bonus:
+            return VerificationResult(
+                accepted_token_ids=accepted_token_ids,
+                corrected_token_id=None,
+                bonus_token_id=None,
+                proposed_count=proposed_count,
+                target_probs=target_probs,
+                state=proposed_state,
+            )
+
+        bonus_token_id = int(
+            target.torch.argmax(proposed_state.next_token_logits, dim=-1).item()
+        )
+        bonus_state = target.decode_one(bonus_token_id, proposed_state)
+        return VerificationResult(
+            accepted_token_ids=accepted_token_ids,
+            corrected_token_id=None,
+            bonus_token_id=bonus_token_id,
+            proposed_count=proposed_count,
+            target_probs=target_probs,
+            state=bonus_state,
+        )
+
     for token_id, draft_probs, logits in zip(
         proposal.token_ids,
         proposal.probs,
         target_logits,
     ):
+        if draft_probs is None:
+            raise ValueError("sampled verification requires draft probabilities")
+
         target_distribution = logits_to_probs(
             logits,
             temperature=temperature,

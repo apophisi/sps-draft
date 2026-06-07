@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-thinking", action="store_true")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("-k", "--draft-steps", type=int, default=4)
-    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="auto")

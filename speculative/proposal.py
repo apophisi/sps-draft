@@ -10,10 +10,10 @@ from speculative.sampling import logits_to_probs, sample_token
 
 @dataclass
 class DraftProposal:
-    """Draft model's k-token proposal and the distributions used to sample it."""
+    """Draft model's k-token proposal and optional sampling distributions."""
 
     token_ids: list[int]
-    probs: list[np.ndarray]
+    probs: list[np.ndarray | None]
     state: PrefillState
 
 
@@ -23,30 +23,29 @@ def propose_k_tokens(
     *,
     k: int,
     rng: np.random.Generator,
-    temperature: float = 1.0,
+    temperature: float = 0.0,
     top_k: int | None = None,
 ) -> DraftProposal:
-    """Use the draft model to autoregressively propose k future tokens.
-
-    The returned `probs[i]` is q_i(.), the draft distribution used to sample
-    `token_ids[i]`. SPS verification needs these q_i distributions when
-    computing min(1, p_i(x) / q_i(x)).
-    """
+    """Use the draft model to autoregressively propose k future tokens."""
 
     if k <= 0:
         raise ValueError("k must be > 0")
 
     token_ids: list[int] = []
-    probs: list[np.ndarray] = []
+    probs: list[np.ndarray | None] = []
     current_state = state
 
     for _ in range(k):
-        q = logits_to_probs(
-            current_state.next_token_logits,
-            temperature=temperature,
-            top_k=top_k,
-        )
-        token_id = sample_token(q, rng)
+        if temperature <= 0.0:
+            token_id = int(draft.torch.argmax(current_state.next_token_logits, dim=-1).item())
+            q = None
+        else:
+            q = logits_to_probs(
+                current_state.next_token_logits,
+                temperature=temperature,
+                top_k=top_k,
+            )
+            token_id = sample_token(q, rng)
 
         token_ids.append(token_id)
         probs.append(q)

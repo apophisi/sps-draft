@@ -17,7 +17,10 @@ import time
 import numpy as np
 
 from runtime.model import ModelRunner, PrefillState
-from speculative.generation import GenerationStats, advance_state
+from speculative.generation import (
+    GenerationStats,
+    advance_draft_state_after_round,
+)
 from speculative.proposal import DraftProposal
 from speculative.sampling import logits_to_probs, sample_token
 from speculative.verification import VerificationResult, verify_k_tokens
@@ -57,6 +60,25 @@ class DraftDepthPolicy(ABC):
     def K_max(self) -> int:
         """Maximum speculative draft depth per round (Proposal: K_max)."""
 
+    def should_stop_from_logits(
+        self,
+        logits,
+        torch,
+        *,
+        tokens_proposed: int,
+    ) -> bool:
+        probs = logits_to_probs(logits, temperature=1.0)
+        return self.should_stop_after_token(probs, tokens_proposed=tokens_proposed)
+
+    @abstractmethod
+    def should_stop_after_token(
+        self,
+        probs: np.ndarray,
+        *,
+        tokens_proposed: int,
+    ) -> bool:
+        """Fallback policy decision from a CPU probability vector."""
+
 
 @dataclass(frozen=True)
 class FixedDepthPolicy(DraftDepthPolicy):
@@ -71,6 +93,15 @@ class FixedDepthPolicy(DraftDepthPolicy):
     def should_stop_after_token(
         self,
         probs: np.ndarray,
+        *,
+        tokens_proposed: int,
+    ) -> bool:
+        return tokens_proposed >= self.K
+
+    def should_stop_from_logits(
+        self,
+        logits,
+        torch,
         *,
         tokens_proposed: int,
     ) -> bool:
@@ -95,7 +126,17 @@ class PMaxEarlyStopPolicy(DraftDepthPolicy):
         tokens_proposed: int,
     ) -> bool:
         p_max = float(np.max(probs))
-        return p_max < self.threshold
+        return p_max < self.threshold or tokens_proposed >= self.K_max
+
+    def should_stop_from_logits(
+        self,
+        logits,
+        torch,
+        *,
+        tokens_proposed: int,
+    ) -> bool:
+        p_max = float(torch.softmax(logits.float(), dim=-1).max().item())
+        return p_max < self.threshold or tokens_proposed >= self.K_max
 
     @property
     def strategy_name(self) -> str:
@@ -119,7 +160,21 @@ class Top1Top2MarginEarlyStopPolicy(DraftDepthPolicy):
             return True
         top2 = np.partition(probs, -2)[-2:]
         p_top1, p_top2 = float(np.max(top2)), float(np.min(top2))
-        return (p_top1 - p_top2) < self.margin
+        return (p_top1 - p_top2) < self.margin or tokens_proposed >= self.K_max
+
+    def should_stop_from_logits(
+        self,
+        logits,
+        torch,
+        *,
+        tokens_proposed: int,
+    ) -> bool:
+        if logits.shape[-1] < 2:
+            return True
+        probs = torch.softmax(logits.float(), dim=-1)
+        top2 = torch.topk(probs, k=2, dim=-1).values
+        margin = float((top2[..., 0] - top2[..., 1]).item())
+        return margin < self.margin or tokens_proposed >= self.K_max
 
     @property
     def strategy_name(self) -> str:
@@ -167,24 +222,37 @@ def propose_dynamic_tokens(
         return DraftProposal(token_ids=[], probs=[], state=state)
 
     token_ids: list[int] = []
-    probs_list: list[np.ndarray] = []
+    probs_list: list[np.ndarray | None] = []
     current_state = state
 
     for _ in range(K_limit):
-        token_id, probs = select_token(
-            current_state.next_token_logits,
-            rng=rng,
-            temperature=temperature,
-            top_k=top_k,
-        )
+        logits = current_state.next_token_logits
+        if temperature <= 0.0:
+            token_id = int(draft.torch.argmax(logits, dim=-1).item())
+            probs = None
+        else:
+            token_id, probs = select_token(
+                logits,
+                rng=rng,
+                temperature=temperature,
+                top_k=top_k,
+            )
         token_ids.append(token_id)
         probs_list.append(probs)
         current_state = draft.decode_one(token_id, current_state)
 
-        if policy.should_stop_after_token(
-            probs,
-            tokens_proposed=len(token_ids),
-        ):
+        if temperature <= 0.0:
+            should_stop = policy.should_stop_from_logits(
+                logits,
+                draft.torch,
+                tokens_proposed=len(token_ids),
+            )
+        else:
+            should_stop = policy.should_stop_after_token(
+                probs,
+                tokens_proposed=len(token_ids),
+            )
+        if should_stop:
             break
 
     return DraftProposal(
@@ -242,14 +310,13 @@ def speculative_generate_dynamic(
             break
 
         sample_bonus = remaining > draft_length
-        verify_temperature = 1.0 if temperature <= 0.0 else temperature
         phase_start = time.perf_counter() if profile_phases else 0.0
         verification = verify_k_tokens(
             target,
             current_target_state,
             proposal,
             rng=rng,
-            temperature=verify_temperature,
+            temperature=temperature,
             top_k=top_k,
             eos_token_id=eos_token_id,
             sample_bonus=sample_bonus,
@@ -261,7 +328,12 @@ def speculative_generate_dynamic(
         generated_token_ids.extend(round_token_ids)
         current_target_state = verification.state
         phase_start = time.perf_counter() if profile_phases else 0.0
-        current_draft_state = advance_state(draft, current_draft_state, round_token_ids)
+        current_draft_state = advance_draft_state_after_round(
+            draft,
+            current_draft_state,
+            proposal,
+            verification,
+        )
         if profile_phases:
             stats.draft_update_sec += time.perf_counter() - phase_start
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from runtime.model import ModelRunner, PrefillState
-from speculative.proposal import propose_k_tokens
+from speculative.proposal import DraftProposal, propose_k_tokens
 from speculative.verification import VerificationResult, verify_k_tokens
 
 
@@ -49,7 +49,7 @@ def speculative_generate(
     draft_steps: int,
     rng: np.random.Generator,
     eos_token_id: int | None = None,
-    temperature: float = 1.0,
+    temperature: float = 0.0,
     top_k: int | None = None,
 ) -> GenerationResult:
     if max_new_tokens <= 0:
@@ -91,7 +91,12 @@ def speculative_generate(
         round_token_ids = verification.token_ids[:remaining]
         generated_token_ids.extend(round_token_ids)
         current_target_state = verification.state
-        current_draft_state = advance_state(draft, current_draft_state, round_token_ids)
+        current_draft_state = advance_draft_state_after_round(
+            draft,
+            current_draft_state,
+            proposal,
+            verification,
+        )
 
         stats.rounds += 1
         stats.proposed_tokens += verification.proposed_count
@@ -119,3 +124,17 @@ def advance_state(
     token_ids: list[int],
 ) -> PrefillState:
     return runner.decode_many(token_ids, state)
+
+
+def advance_draft_state_after_round(
+    runner: ModelRunner,
+    state: PrefillState,
+    proposal: DraftProposal,
+    verification: VerificationResult,
+) -> PrefillState:
+    if verification.accepted_all:
+        current_state = proposal.state
+        if verification.bonus_token_id is not None:
+            current_state = runner.decode_one(verification.bonus_token_id, current_state)
+        return current_state
+    return runner.decode_many(verification.token_ids, state)
