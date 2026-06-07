@@ -1,0 +1,5 @@
+{"question_id": 0, "turns": ["请用一句话解释 speculative decoding。"]}
+{"question_id": 1, "turns": ["什么是 KV cache？它如何加速大模型推理？"]}
+{"question_id": 2, "turns": ["比较固定 K 与动态 K 推测解码的优缺点。"]}
+{"question_id": 3, "turns": ["写一首关于春天的四句诗。"]}
+{"question_id": 4, "turns": ["解释 Transformer 中 self-attention 的作用。"]}
