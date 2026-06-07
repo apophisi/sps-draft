@@ -1,6 +1,6 @@
 """Run dynamic draft-depth experiments (Proposal Part 2).
 
-Compares dynamic K (p_max early stop) against fixed K=4 and K=8, writes
+Compares dynamic K (p_max early stop) against fixed K=1,2,4,8, writes
 results/dynamic_k_results.jsonl. Optional top-1 / top-2 margin strategy.
 
 Proposal settings: greedy decoding (temperature=0), K_max=8,
@@ -35,10 +35,10 @@ from speculative.sampling import logits_to_probs, sample_token
 DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parent / "prompts" / "default_prompts.txt"
 DEFAULT_OUTPUT = Path(__file__).resolve().parent / "results" / "dynamic_k_results.jsonl"
 
-# Proposal symbols: K_max = 8; threshold = 0.6, 0.7, 0.8; fixed K = 4, 8
+# Proposal symbols: K_max = 8; threshold = 0.6, 0.7, 0.8; fixed K = 1, 2, 4, 8
 K_max = 8
 THRESHOLDS = (0.6, 0.7, 0.8)
-FIXED_K = (4, 8)
+FIXED_K = (1, 2, 4, 8)
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,9 @@ class RunMetrics:
     tokens_s: float
     elapsed_sec: float
     speedup: float | None
+    decoding_method: str = "greedy"
+    temperature: float = 0.0
+    top_p: float = 1.0
     draft_proposal_sec: float = 0.0
     target_verify_sec: float = 0.0
     draft_update_sec: float = 0.0
@@ -139,6 +142,9 @@ def measure_run(
     threshold: float | None = None,
     margin: float | None = None,
     speedup: float | None = None,
+    decoding_method: str = "greedy",
+    temperature: float = 0.0,
+    top_p: float = 1.0,
     draft_proposal_sec: float = 0.0,
     target_verify_sec: float = 0.0,
     draft_update_sec: float = 0.0,
@@ -166,6 +172,9 @@ def measure_run(
         tokens_s=tokens_s,
         elapsed_sec=elapsed_sec,
         speedup=speedup,
+        decoding_method=decoding_method,
+        temperature=temperature,
+        top_p=top_p,
         draft_proposal_sec=draft_proposal_sec,
         target_verify_sec=target_verify_sec,
         draft_update_sec=draft_update_sec,
@@ -304,6 +313,9 @@ def run_experiments(
     *,
     thresholds: tuple[float, ...] = THRESHOLDS,
 ) -> list[RunMetrics]:
+    if args.top_p != 1.0:
+        raise ValueError("This experiment follows describe.md with top_p=1")
+
     prompts = load_prompts(Path(args.prompts))
     output = Path(args.output)
     if args.overwrite and output.exists():
@@ -319,7 +331,6 @@ def run_experiments(
     )
     eos_token_id = tokenizer.eos_token_id
     temperature = 0.0
-    target_temperature = 1.0 if temperature <= 0.0 else temperature
     all_records: list[RunMetrics] = []
 
     for prompt_idx, prompt in enumerate(prompts):
@@ -339,7 +350,7 @@ def run_experiments(
             max_new_tokens=args.max_new_tokens,
             eos_token_id=eos_token_id,
             rng=ar_rng,
-            temperature=target_temperature,
+            temperature=temperature,
         )
         ar_tokens = len(ar_token_ids)
 
@@ -482,6 +493,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--prompt-mode", choices=["plain", "chat"], default="chat")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="auto")
     parser.add_argument("--device-map", default=None)
