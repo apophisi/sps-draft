@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import time
 
 import numpy as np
+import torch
 
 from runtime.model import ModelRunner, PrefillState
 from speculative.generation import (
@@ -73,7 +74,7 @@ class DraftDepthPolicy(ABC):
     @abstractmethod
     def should_stop_after_token(
         self,
-        probs: np.ndarray,
+        probs: torch.Tensor,
         *,
         tokens_proposed: int,
     ) -> bool:
@@ -92,7 +93,7 @@ class FixedDepthPolicy(DraftDepthPolicy):
 
     def should_stop_after_token(
         self,
-        probs: np.ndarray,
+        probs: torch.Tensor,
         *,
         tokens_proposed: int,
     ) -> bool:
@@ -121,11 +122,11 @@ class PMaxEarlyStopPolicy(DraftDepthPolicy):
 
     def should_stop_after_token(
         self,
-        probs: np.ndarray,
+        probs: torch.Tensor,
         *,
         tokens_proposed: int,
     ) -> bool:
-        p_max = float(np.max(probs))
+        p_max = float(probs.max().item())
         return p_max < self.threshold or tokens_proposed >= self.K_max
 
     def should_stop_from_logits(
@@ -152,15 +153,15 @@ class Top1Top2MarginEarlyStopPolicy(DraftDepthPolicy):
 
     def should_stop_after_token(
         self,
-        probs: np.ndarray,
+        probs: torch.Tensor,
         *,
         tokens_proposed: int,
     ) -> bool:
-        if probs.size < 2:
+        if probs.numel() < 2:
             return True
-        top2 = np.partition(probs, -2)[-2:]
-        p_top1, p_top2 = float(np.max(top2)), float(np.min(top2))
-        return (p_top1 - p_top2) < self.margin or tokens_proposed >= self.K_max
+        top2 = torch.topk(probs, k=2, dim=-1).values
+        margin = float((top2[..., 0] - top2[..., 1]).item())
+        return margin < self.margin or tokens_proposed >= self.K_max
 
     def should_stop_from_logits(
         self,
@@ -187,7 +188,7 @@ def select_token(
     rng: np.random.Generator,
     temperature: float = 0.0,
     top_k: int | None = None,
-) -> tuple[int, np.ndarray]:
+) -> tuple[int, torch.Tensor]:
     """Greedy (temperature=0) or sampled token plus draft distribution q_i.
 
     Stopping rules use softmax at temperature=1.0 so p_max reflects model
@@ -197,7 +198,7 @@ def select_token(
     policy_temperature = 1.0 if temperature <= 0.0 else temperature
     probs = logits_to_probs(logits, temperature=policy_temperature, top_k=top_k)
     if temperature <= 0.0:
-        token_id = int(np.argmax(probs))
+        token_id = int(torch.argmax(probs, dim=-1).item())
     else:
         token_id = sample_token(probs, rng)
     return token_id, probs
@@ -222,7 +223,7 @@ def propose_dynamic_tokens(
         return DraftProposal(token_ids=[], probs=[], state=state)
 
     token_ids: list[int] = []
-    probs_list: list[np.ndarray | None] = []
+    probs_list: list[torch.Tensor | None] = []
     current_state = state
 
     for _ in range(K_limit):

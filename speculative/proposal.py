@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
+import torch
 
 from runtime.model import ModelRunner, PrefillState
 from speculative.sampling import logits_to_probs, sample_token
@@ -13,7 +13,7 @@ class DraftProposal:
     """Draft model's k-token proposal and optional sampling distributions."""
 
     token_ids: list[int]
-    probs: list[np.ndarray | None]
+    probs: list[torch.Tensor | None]
     state: PrefillState
 
 
@@ -22,7 +22,7 @@ def propose_k_tokens(
     state: PrefillState,
     *,
     k: int,
-    rng: np.random.Generator,
+    rng,
     temperature: float = 0.0,
     top_k: int | None = None,
 ) -> DraftProposal:
@@ -32,7 +32,7 @@ def propose_k_tokens(
         raise ValueError("k must be > 0")
 
     token_ids: list[int] = []
-    probs: list[np.ndarray | None] = []
+    probs: list[torch.Tensor | None] = []
     current_state = state
 
     for _ in range(k):
