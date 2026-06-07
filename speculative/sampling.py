@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import numpy as np
+import torch
 
 
 def logits_to_probs(
@@ -8,73 +8,75 @@ def logits_to_probs(
     *,
     temperature: float = 1.0,
     top_k: int | None = None,
-) -> np.ndarray:
-    """Convert one-step logits to a NumPy probability distribution.
+) -> torch.Tensor:
+    """Convert one-step logits to a Torch probability distribution."""
 
-    `top_k` is optional sampling truncation. It is different from SPS draft
-    length k: top_k limits the vocabulary candidates for one sampled token.
-    """
-
-    logits_np = as_numpy_1d(logits).astype(np.float64, copy=True)
+    logits_t = as_torch_1d(logits).float()
     if temperature <= 0.0:
         raise ValueError("temperature must be > 0")
 
-    logits_np = logits_np / temperature
+    logits_t = logits_t / temperature
     if top_k is not None:
-        logits_np = apply_top_k(logits_np, top_k)
+        logits_t = apply_top_k(logits_t, top_k)
 
-    logits_np = logits_np - np.max(logits_np)
-    exp_logits = np.exp(logits_np)
-    total = np.sum(exp_logits)
-    if not np.isfinite(total) or total <= 0.0:
+    probs = torch.softmax(logits_t, dim=-1)
+    total = probs.sum()
+    if not torch.isfinite(total).item() or float(total.item()) <= 0.0:
         raise ValueError("invalid logits: cannot build a probability distribution")
-    return exp_logits / total
+    return probs
 
 
-def sample_token(probs: np.ndarray, rng: np.random.Generator) -> int:
+def sample_token(probs: torch.Tensor, rng=None) -> int:
     probs = normalize(probs)
-    return int(rng.choice(len(probs), p=probs))
+    generator = make_torch_generator(probs, rng)
+    return int(torch.multinomial(probs, num_samples=1, generator=generator).item())
 
 
 def sample_residual(
-    target_probs: np.ndarray,
-    draft_probs: np.ndarray,
-    rng: np.random.Generator,
+    target_probs: torch.Tensor,
+    draft_probs: torch.Tensor,
+    rng=None,
 ) -> int:
     """Sample from norm(max(target_probs - draft_probs, 0))."""
 
-    residual = np.maximum(
-        np.asarray(target_probs, dtype=np.float64)
-        - np.asarray(draft_probs, dtype=np.float64),
-        0.0,
+    residual = torch.clamp(
+        as_torch_1d(target_probs) - as_torch_1d(draft_probs),
+        min=0.0,
     )
-    if np.sum(residual) <= 0.0:
+    if float(residual.sum().item()) <= 0.0:
         return sample_token(target_probs, rng)
     return sample_token(residual, rng)
 
 
-def normalize(values: np.ndarray) -> np.ndarray:
-    values = np.asarray(values, dtype=np.float64)
-    total = np.sum(values)
-    if not np.isfinite(total) or total <= 0.0:
+def normalize(values: torch.Tensor) -> torch.Tensor:
+    values = as_torch_1d(values).float()
+    total = values.sum()
+    if not torch.isfinite(total).item() or float(total.item()) <= 0.0:
         raise ValueError("cannot normalize an empty or all-zero distribution")
     return values / total
 
 
-def apply_top_k(logits: np.ndarray, top_k: int) -> np.ndarray:
+def apply_top_k(logits: torch.Tensor, top_k: int) -> torch.Tensor:
     if top_k <= 0:
         raise ValueError("top_k must be > 0")
     if top_k >= logits.shape[-1]:
         return logits
 
-    filtered = np.full_like(logits, -np.inf)
-    top_indices = np.argpartition(logits, -top_k)[-top_k:]
-    filtered[top_indices] = logits[top_indices]
-    return filtered
+    top_values, top_indices = torch.topk(logits, k=top_k, dim=-1)
+    filtered = torch.full_like(logits, -torch.inf)
+    return filtered.scatter(dim=-1, index=top_indices, src=top_values)
 
 
-def as_numpy_1d(tensor_or_array) -> np.ndarray:
-    if hasattr(tensor_or_array, "detach"):
-        tensor_or_array = tensor_or_array.detach().float().cpu().numpy()
-    array = np.asarray(tensor_or_array)
-    return np.squeeze(array)
+def as_torch_1d(tensor_or_array) -> torch.Tensor:
+    if torch.is_tensor(tensor_or_array):
+        return tensor_or_array.detach().squeeze()
+    return torch.as_tensor(tensor_or_array).squeeze()
+
+
+def make_torch_generator(probs: torch.Tensor, rng) -> torch.Generator | None:
+    if rng is None or not hasattr(rng, "integers"):
+        return None
+    generator = torch.Generator(device=probs.device)
+    seed = int(rng.integers(0, 2**63 - 1))
+    generator.manual_seed(seed)
+    return generator

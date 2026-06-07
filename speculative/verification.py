@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
+import torch
 
 from runtime.model import ModelRunner, PrefillState
 from speculative.proposal import DraftProposal
@@ -17,7 +17,7 @@ class VerificationResult:
     corrected_token_id: int | None
     bonus_token_id: int | None
     proposed_count: int
-    target_probs: list[np.ndarray]
+    target_probs: list[torch.Tensor]
     state: PrefillState
 
     @property
@@ -57,7 +57,7 @@ def verify_k_tokens(
     state: PrefillState,
     proposal: DraftProposal,
     *,
-    rng: np.random.Generator,
+    rng,
     temperature: float = 0.0,
     top_k: int | None = None,
     eos_token_id: int | None = None,
@@ -80,7 +80,7 @@ def verify_k_tokens(
         )
 
     accepted_token_ids: list[int] = []
-    target_probs: list[np.ndarray] = []
+    target_probs: list[torch.Tensor] = []
     proposed_state = target.decode_many(proposal.token_ids, state)
     target_logits = [state.next_token_logits]
     target_logits.extend(
@@ -89,7 +89,7 @@ def verify_k_tokens(
     )
 
     if temperature <= 0.0:
-        empty_distribution = np.empty(0, dtype=np.float64)
+        empty_distribution = torch.empty(0, dtype=torch.float32, device=state.input_ids.device)
         for token_id, logits in zip(proposal.token_ids, target_logits):
             target_token_id = int(target.torch.argmax(logits, dim=-1).item())
             target_probs.append(empty_distribution)
@@ -228,11 +228,11 @@ def verify_k_tokens(
 def acceptance_probability(
     *,
     token_id: int,
-    target_probs: np.ndarray,
-    draft_probs: np.ndarray,
+    target_probs: torch.Tensor,
+    draft_probs: torch.Tensor,
 ) -> float:
-    p = float(target_probs[token_id])
-    q = float(draft_probs[token_id])
+    p = float(target_probs[token_id].item())
+    q = float(draft_probs[token_id].item())
     if q <= 0.0:
         return 1.0 if p > 0.0 else 0.0
     return min(1.0, p / q)
